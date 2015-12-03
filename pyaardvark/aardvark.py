@@ -374,6 +374,27 @@ class Aardvark(object):
                 flags, len(data), data)
         _raise_error_if_negative(ret)
 
+    def i2c_master_write_ext(self, i2c_address, data, flags=I2C_NO_FLAGS):
+        """
+        Make an I2C write access and return status code.
+
+        The given I2C device is addressed and data given as a string is
+        written. The transaction is finished with an I2C stop condition unless
+        I2C_NO_STOP is set in the flags.
+        # Write a stream of bytes to the I2C slave device.
+        # This API function returns the number of bytes written into
+        # the num_written variable.  The return value of the function
+        # is a status code.
+        Returns:
+        -------
+        status_code: int
+        """
+        data = array.array('B', data)
+        status_code, ret = api.py_aa_i2c_write_ext(self.handle, i2c_address, flags, len(data), data)
+        _raise_error_if_negative(ret)
+        return status_code
+
+
     def i2c_master_read(self, addr, length, flags=I2C_NO_FLAGS):
         """Make an I2C read access.
 
