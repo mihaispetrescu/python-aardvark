@@ -1,4 +1,5 @@
 # Copyright (c) 2014-2015  Kontron Europe GmbH
+#               2017       CAMCO Produktions- und Vertriebs-GmbH
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the GNU Lesser General Public
@@ -54,16 +55,23 @@ if not api:
 
 log = logging.getLogger(__name__)
 
-def error_string(error_number):
+def _raise_error_if_negative(val):
+    """Raises an :class:`IOError` if `val` is negative."""
+    if val < 0:
+        raise IOError(val, api.py_aa_status_string(val))
+
+def status_string(code):
     for k, v in globals().items():
-        if k.startswith('ERR_') and v == error_number:
+        if k.startswith('I2C_STATUS_') and v == code:
             return k
     else:
-        return 'ERR_UNKNOWN_ERROR'
+        return 'I2C_STATUS_UNKNOWN_STATUS'
 
-def _raise_error_if_negative(val):
-    if val < 0:
-        raise IOError(error_string(val))
+
+def _raise_i2c_status_code_error_if_failure(code):
+    """Raises an :class:`IOError` if `code` is not :data:`I2C_STATUS_OK`."""
+    if code != I2C_STATUS_OK:
+        raise IOError(code, status_string(code))
 
 def _unique_id_str(unique_id):
     id1 = unique_id / 1000000
@@ -156,14 +164,14 @@ def open(port=None, serial_number=None):
             if d['serial_number'] == serial_number:
                 break
         else:
-            raise IOError(error_string(ERR_UNABLE_TO_OPEN))
+            _raise_error_if_negative(ERR_UNABLE_TO_OPEN)
 
         dev = Aardvark(d['port'])
 
         # make sure we opened the correct device
         if dev.unique_id_str() != serial_number:
             dev.close()
-            raise IOError(error_string(ERR_UNABLE_TO_OPEN))
+            _raise_error_if_negative(ERR_UNABLE_TO_OPEN)
     else:
         dev = Aardvark(port)
 
@@ -222,6 +230,9 @@ class Aardvark(object):
             ret = ERR_INCOMPATIBLE_LIBRARY
 
         _raise_error_if_negative(ret)
+
+        # Initialize shadow variables
+        self._i2c_slave_response = None
 
     def __enter__(self):
         return self
@@ -328,6 +339,7 @@ class Aardvark(object):
         """
         ret = api.py_aa_i2c_pullup(self.handle, I2C_PULLUP_QUERY)
         _raise_error_if_negative(ret)
+        return ret
 
     @i2c_pullups.setter
     def i2c_pullups(self, value):
@@ -348,7 +360,7 @@ class Aardvark(object):
         """
         ret = api.py_aa_target_power(self.handle, TARGET_POWER_QUERY)
         _raise_error_if_negative(ret)
-
+        return ret
 
     @target_power.setter
     def target_power(self, value):
@@ -357,6 +369,25 @@ class Aardvark(object):
         else:
             power = TARGET_POWER_NONE
         ret = api.py_aa_target_power(self.handle, power)
+        _raise_error_if_negative(ret)
+
+    @property
+    def i2c_bus_timeout(self):
+        """I2C bus lock timeout in ms.
+
+        Minimum value is 10 ms and the maximum value is 450 ms. Not every value
+        can be set and will be rounded to the next possible number. You can
+        read back the property to get the actual value.
+
+        The power-on default value is 200 ms.
+        """
+        ret = api.py_aa_i2c_bus_timeout(self.handle, 0)
+        _raise_error_if_negative(ret)
+        return ret
+
+    @i2c_bus_timeout.setter
+    def i2c_bus_timeout(self, timeout):
+        ret = api.py_aa_i2c_bus_timeout(self.handle, timeout)
         _raise_error_if_negative(ret)
 
     def i2c_master_write(self, i2c_address, data, flags=I2C_NO_FLAGS):
@@ -370,9 +401,9 @@ class Aardvark(object):
         """
 
         data = array.array('B', data)
-        ret = api.py_aa_i2c_write(self.handle, i2c_address,
-                flags, len(data), data)
-        _raise_error_if_negative(ret)
+        status, _ = api.py_aa_i2c_write_ext(self.handle, i2c_address, flags,
+                len(data), data)
+        _raise_i2c_status_code_error_if_failure(status)
 
     def i2c_master_write_ext(self, i2c_address, data, flags=I2C_NO_FLAGS):
         """
@@ -407,10 +438,10 @@ class Aardvark(object):
         """
 
         data = array.array('B', (0,) * length)
-        ret = api.py_aa_i2c_read(self.handle, addr, flags, length,
-                data)
-        _raise_error_if_negative(ret)
-        del data[ret:]
+        status, rx_len = api.py_aa_i2c_read_ext(self.handle, addr, flags,
+                length, data)
+        _raise_i2c_status_code_error_if_failure(status)
+        del data[rx_len:]
         return data.tostring()
 
     def i2c_master_write_read(self, i2c_address, data, length):
@@ -422,7 +453,7 @@ class Aardvark(object):
         This method is useful for accessing most addressable I2C devices like
         EEPROMs, port expander, etc.
 
-        Basically, this is just a convinient function which interally uses
+        Basically, this is just a convenient function which internally uses
         `i2c_master_write` and `i2c_master_read`.
         """
 
@@ -474,14 +505,46 @@ class Aardvark(object):
     def i2c_slave_read(self):
         """Read the bytes from an I2C slave reception.
 
-        The bytes are returns as an string object.
+        The bytes are returned as a string object.
         """
         data = array.array('B', (0,) * self.BUFFER_SIZE)
-        (ret, slave_addr) = api.py_aa_i2c_slave_read(self.handle, self.BUFFER_SIZE,
-                data)
+        status, addr, rx_len = api.py_aa_i2c_slave_read_ext(self.handle,
+                self.BUFFER_SIZE, data)
+        _raise_i2c_status_code_error_if_failure(status)
+
+        # In case of general call, actually return the general call address
+        if addr == 0x80:
+            addr = 0x00
+        del data[rx_len:]
+        return (addr, data.tostring())
+
+    @property
+    def i2c_slave_response(self):
+        """Response to next read command.
+
+        An array of bytes that will be transmitted to the I2C master with the
+        next read operation.
+
+        Warning: Due to the fact that the Aardvark API does not provide a means
+        to read out this value, it is buffered when setting the property.
+        Reading the property therefore might not return what is actually stored
+        in the device.
+        """
+        return self._i2c_slave_response
+
+    @i2c_slave_response.setter
+    def i2c_slave_response(self, data):
+        data = array.array('B', data)
+        ret = api.py_aa_i2c_slave_set_response(self.handle, len(data), data)
         _raise_error_if_negative(ret)
-        del data[ret:]
-        return (slave_addr, data.tostring())
+        self._i2c_slave_response = data
+
+    @property
+    def i2c_slave_last_transmit_size(self):
+        """Returns the number of bytes transmitted by the slave."""
+        ret = api.py_aa_i2c_slave_write_stats(self.handle)
+        _raise_error_if_negative(ret)
+        return ret
 
     def enable_i2c_monitor(self):
         """Activate the I2C monitor.
@@ -556,7 +619,7 @@ class Aardvark(object):
             raise RuntimeError('SPI Mode not supported')
 
     def spi_write(self, data):
-        "Write a stream of bytes to a SPI device."""
+        """Write a stream of bytes to a SPI device."""
         data_out = array.array('B', data)
         data_in = array.array('B', (0,) * len(data_out))
         ret = api.py_aa_spi_write(self.handle, len(data_out), data_out,

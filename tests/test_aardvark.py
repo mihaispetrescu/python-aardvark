@@ -8,12 +8,6 @@ from pyaardvark.constants import *
 from nose.tools import eq_, raises, assert_raises
 
 
-def test_error_string():
-    eq_(pyaardvark.aardvark.error_string(-1), 'ERR_UNABLE_TO_LOAD_LIBRARY')
-
-def test_error_string_invalid_num():
-    eq_(pyaardvark.aardvark.error_string(1), 'ERR_UNKNOWN_ERROR')
-
 @patch('pyaardvark.aardvark.api', autospec=True)
 def test_open_default(api):
     api.py_aa_open_ext.return_value = (42, (0,) * 6)
@@ -260,24 +254,38 @@ class TestAardvark(object):
         api.py_aa_target_power.return_value = -1
         self.a.target_power = 0
 
+    def test_i2c_bus_timeout(self, api):
+        api.py_aa_i2c_bus_timeout.return_value = 10
+        self.a.i2c_bus_timeout = 300
+        eq_(self.a.i2c_bus_timeout, 10)
+
+        api.py_aa_i2c_bus_timeout.assert_has_calls([
+                call(self.a.handle, 300),
+                call(self.a.handle, 0),
+        ])
+
+    @raises(IOError)
+    def test_i2c_bitrate_error(self, api):
+        api.py_aa_i2c_bitrate.return_value = -1
+        self.a.i2c_bitrate = 0
     def test_i2c_master_write(self, api):
         addr = 0x50
         data = b'\x01\x02\x03'
         flags = pyaardvark.I2C_NO_STOP | pyaardvark.I2C_SIZED_READ
-        api.py_aa_i2c_write.return_value = 0
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_OK, 3)
         self.a.i2c_master_write(addr, data, flags)
-        api.py_aa_i2c_write.assert_called_once_with(
+        api.py_aa_i2c_write_ext.assert_called_once_with(
                 self.a.handle, addr, flags, len(data), array.array('B', data))
 
     def test_i2c_master_write_default_flags(self, api):
-        api.py_aa_i2c_write.return_value = 0
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_OK, 0)
         self.a.i2c_master_write(0, '')
-        api.py_aa_i2c_write.assert_called_once_with(
+        api.py_aa_i2c_write_ext.assert_called_once_with(
                 ANY, ANY, pyaardvark.I2C_NO_FLAGS, ANY, ANY)
 
     @raises(IOError)
     def test_i2c_master_write_error(self, api):
-        api.py_aa_i2c_write.return_value = -1
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_BUS_ERROR, 0)
         self.a.i2c_master_write(0, '')
 
     def test_i2c_master_read(self, api):
@@ -285,25 +293,25 @@ class TestAardvark(object):
             eq_(data, array.array('B', (0,) * length))
             for i in range(length):
                 data[i] = i
-            return length
+            return (I2C_STATUS_OK, length)
 
         addr = 0x50
         flags = pyaardvark.I2C_NO_STOP | pyaardvark.I2C_SIZED_READ
-        api.py_aa_i2c_read.side_effect = i2c_master_read
+        api.py_aa_i2c_read_ext.side_effect = i2c_master_read
         data = self.a.i2c_master_read(addr, 3, flags)
-        api.py_aa_i2c_read.assert_called_once_with(
+        api.py_aa_i2c_read_ext.assert_called_once_with(
                 self.a.handle, addr, flags, 3, ANY)
         eq_(data, b'\x00\x01\x02')
 
     def test_i2c_master_read_default_flags(self, api):
-        api.py_aa_i2c_read.return_value = 1
+        api.py_aa_i2c_read_ext.return_value = (I2C_STATUS_OK, 1)
         data = self.a.i2c_master_read(0, 0)
-        api.py_aa_i2c_read.assert_called_once_with(
+        api.py_aa_i2c_read_ext.assert_called_once_with(
                 ANY, ANY, pyaardvark.I2C_NO_FLAGS, ANY, ANY)
 
     @raises(IOError)
     def test_i2c_master_read_error(self, api):
-        api.py_aa_i2c_read.return_value = -1
+        api.py_aa_i2c_read_ext.return_value = (I2C_STATUS_BUS_ERROR, -1)
         self.a.i2c_master_read(0, 0)
 
     def test_i2c_master_write_read(self, api):
@@ -311,34 +319,34 @@ class TestAardvark(object):
             eq_(data, array.array('B', (0,) * length))
             for i in range(length):
                 data[i] = i
-            return length
+            return (I2C_STATUS_OK, length)
 
-        api.py_aa_i2c_write.return_value = 0
-        api.py_aa_i2c_read.side_effect = i2c_master_read
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_OK, 0)
+        api.py_aa_i2c_read_ext.side_effect = i2c_master_read
         addr = 0x50
         data = self.a.i2c_master_write_read(addr, b'\x00\x01\x02', 3)
-        api.py_aa_i2c_write.assert_called_once_with(self.a.handle, addr,
+        api.py_aa_i2c_write_ext.assert_called_once_with(self.a.handle, addr,
                 pyaardvark.I2C_NO_STOP, len(data), array.array('B', data))
-        api.py_aa_i2c_read.assert_called_once_with(
+        api.py_aa_i2c_read_ext.assert_called_once_with(
                 self.a.handle, addr, pyaardvark.I2C_NO_FLAGS, 3, ANY)
         eq_(data, b'\x00\x01\x02')
 
     def test_i2c_master_write_read_default_flags(self, api):
-        api.py_aa_i2c_read.return_value = 1
+        api.py_aa_i2c_read_ext.return_value = (I2C_STATUS_OK, 1)
         data = self.a.i2c_master_read(0, 0)
-        api.py_aa_i2c_read.assert_called_once_with(
+        api.py_aa_i2c_read_ext.assert_called_once_with(
                 ANY, ANY, pyaardvark.I2C_NO_FLAGS, ANY, ANY)
 
     @raises(IOError)
     def test_i2c_master_write_read_error_read(self, api):
-        api.py_aa_i2c_write.return_value = 1
-        api.py_aa_i2c_read.return_value = -1
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_OK, 1)
+        api.py_aa_i2c_read_ext.return_value = (I2C_STATUS_BUS_ERROR, -1)
         self.a.i2c_master_write_read(0, '', 0)
 
     @raises(IOError)
     def test_i2c_master_write_read_error_write(self, api):
-        api.py_aa_i2c_write.return_value = -1
-        api.py_aa_i2c_read.return_value = 1
+        api.py_aa_i2c_write_ext.return_value = (I2C_STATUS_BUS_ERROR, -1)
+        api.py_aa_i2c_read_ext.return_value = (I2C_STATUS_OK, 1)
         self.a.i2c_master_write_read(0, '', 0)
 
     def test_enable_i2c_slave(self, api):
@@ -370,18 +378,43 @@ class TestAardvark(object):
             length = 3
             for i in range(length):
                 data[i] = i
-            return (length, addr)
+            return (I2C_STATUS_OK, addr, length)
 
-        api.py_aa_i2c_slave_read.side_effect = i2c_slave_read
+        api.py_aa_i2c_slave_read_ext.side_effect = i2c_slave_read
         ret = self.a.i2c_slave_read()
-        api.py_aa_i2c_slave_read.assert_called_once_with(
+        api.py_aa_i2c_slave_read_ext.assert_called_once_with(
                 self.a.handle, self.a.BUFFER_SIZE, ANY)
         eq_(ret, (addr, b'\x00\x01\x02'))
 
     @raises(IOError)
     def test_i2c_slave_read_error(self, api):
-        api.py_aa_i2c_slave_read.return_value = (-1, 0)
+        api.py_aa_i2c_slave_read_ext.return_value = (-1, 0, I2C_STATUS_BUS_ERROR)
         self.a.i2c_slave_read()
+
+    def test_i2c_slave_set_response(self, api):
+        api.py_aa_i2c_slave_set_response.return_value = 0
+        data = range(4)
+        self.a.i2c_slave_response = data
+        api.py_aa_i2c_slave_set_response.assert_called_once_with(
+                self.a.handle, len(data), array.array('B', data))
+
+    @raises(IOError)
+    def test_i2c_slave_set_response_error(self, api):
+        api.py_aa_i2c_slave_set_response.return_value = -1
+        data = range(4)
+        self.a.i2c_slave_response = data
+
+    def test_last_transmit_size(self, api):
+        expected_result = 23
+        api.py_aa_i2c_slave_write_stats.return_value = expected_result
+        actual_result = self.a.i2c_slave_last_transmit_size
+        api.py_aa_i2c_slave_write_stats.assert_called_once_with(self.a.handle)
+        eq_(actual_result, expected_result)
+
+    @raises(IOError)
+    def test_last_transmit_size_error(self, api):
+        api.py_aa_i2c_slave_write_stats.return_value = -1
+        self.a.i2c_slave_last_transmit_size
 
     def test_enable_i2c_monitor(self, api):
         api.py_aa_i2c_monitor_enable.return_value = 0
